@@ -1,0 +1,3 @@
+[deps]
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+WRDS = "01be1aad-4938-46f0-adad-3b8614061b76"
