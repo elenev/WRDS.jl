@@ -1,8 +1,12 @@
 # WRDS
 
+*This package is not affiliated with WRDS or the University of Pennsylvania.*
+
 This is a Julia package for accessing the Wharton Research Data Services (WRDS) data sets. It provides a simple interface to download data from WRDS using its PostgresSQL interface and load them into Julia. The package is inspired by the `wrds` python package and this tutorial by Yifan Liu on Julia Discourse: https://discourse.julialang.org/t/querying-wrds-data-using-julia/31835.
 
 Note: You must have a valid WRDS account to use this package.
+
+Currently, the package is experimental. There are probably bugs and missing features. If you encounter any issues, please open an issue on GitHub. I will do my best to address them.
 
 ## Installation
 
@@ -95,3 +99,7 @@ WRDS.close(wrds)
 ```
 
 If you used the `WRDSConnectionSettings` approach, there are no connections to close. The connection is closed automatically when the function returns.
+
+## Future Work
+
+It would be great to have convenience functions for common data sets or dataset combinations. Ideally, the merges would be done on the server side to minimize the amount of data transferred and avoid a `DataFrames` dependency. If you have any other ideas or requests, please open an issue on GitHub. Or better yet, code it up and open a pull request!
