@@ -2,6 +2,24 @@ module WRDS
 
 using LibPQ, Tables, PrettyTables
 
+"""
+    struct WRDSConnectionSettings
+
+A struct representing the connection settings for accessing WRDS (Wharton Research Data Services) database.
+    
+# Fields
+- dbname::String: The name of the database. Default is "wrds".
+- host::String: The hostname or IP address of the WRDS database server. Default is "wrds-pgdata.wharton.upenn.edu".
+- port::Int: The port number of the WRDS database server. Default is 9737.
+- username::String: The username for authenticating with the WRDS database.
+- password::Union{String, Nothing}: The password for authenticating with the WRDS database. Default is `nothing`.
+- passfile::Union{String, Nothing}: The path to a `.pgpass` file containing the password for authenticating with the WRDS database. Default is `nothing`.
+    
+# Example
+```julia
+settings = WRDSConnectionSettings(username="myusername", password="mypassword")
+```
+"""
 Base.@kwdef struct WRDSConnectionSettings
     dbname::String = "wrds"
     host::String = "wrds-pgdata.wharton.upenn.edu"
@@ -11,11 +29,34 @@ Base.@kwdef struct WRDSConnectionSettings
     passfile::Union{String, Nothing} = nothing
 end
 
+"""
+    connect(; username, kwargs...)
+
+Create a `WRDSConnectionSettings` object with the provided `username` and any additional keyword arguments, and then establish a connection to the WRDS database.
+
+# Arguments
+- `username::String`: The username for authenticating with the WRDS database.
+- `kwargs...`: Additional keyword arguments to be passed to the `WRDSConnectionSettings` constructor.
+
+# Returns
+- `conn::LibPQ.Connection`: A connection to the WRDS database.
+"""
 function connect(; username, kwargs...)
     settings = WRDSConnectionSettings(; username, kwargs...)
     return connect(settings)
 end
 
+"""
+    connect(settings::WRDSConnectionSettings)
+
+Establish a connection to the WRDS database using the provided `settings`.
+
+# Arguments
+- `settings::WRDSConnectionSettings`: The settings to use for the connection.
+
+# Returns
+- `conn::LibPQ.Connection`: A connection to the WRDS database.
+"""
 function connect(settings::WRDSConnectionSettings)
     connstr = "dbname=$(settings.dbname) host=$(settings.host) port=$(settings.port) user=$(settings.username)"
     if settings.password !== nothing
@@ -43,6 +84,19 @@ describe_table(settings::WRDSConnectionSettings, library, table; kwargs...) = wr
 raw_sql(settings::WRDSConnectionSettings, query) = wrap_function(raw_sql, settings, query)
 get_table(settings::WRDSConnectionSettings, library, table; kwargs...) = wrap_function(get_table, settings, library, table; kwargs...)
 
+"""
+    list_libraries(conn, print=true, sasonly=false)
+
+Retrieve and optionally print the schema of the library from the WRDS database connection.
+
+# Arguments
+- `conn`: The connection to the WRDS database, or a `WRDSConnectionSettings`` object.
+- `print::Bool`: If true, the function will print a pretty version of the libraries.
+- `sasonly::Bool`: If true, the function will only return SAS libraries (parent libraries).
+
+# Returns
+- libraries::Vector{String} library names
+"""
 function list_libraries(conn::LibPQ.Connection; print=true, sasonly=false)
 
     data = get_library_schema(conn)
@@ -142,6 +196,21 @@ function stringify_where(where)
     end
 end
 
+"""
+    list_tables(conn, library, print=false, verify_links=false)
+
+Retrieve and optionally print the list of tables in a given library from the WRDS database connection. Optionally verify the links in each table.
+
+# Arguments
+- `conn`: The connection to the WRDS database, or a `WRDSConnectionSettings`` object.
+- `library`: The library in the WRDS database to list tables from.
+- `print::Bool`: If true, the function will print a pretty version of the tables.
+- `verify_links::Bool`: If true, the function will verify the links in each table. This is only relevant for SAS libraries, which do not have pages in the web data dictionary. 
+   With `verify_links=true`, the function will attempt to find the corresponding Postgres schema for the SAS library and construct the URL for each table.
+
+# Returns
+- A list of tables in the specified library.
+"""
 function list_tables(conn::LibPQ.Connection, library; print=true, verify_links=true)
     query = """
     SELECT  distinct table_name
@@ -195,6 +264,21 @@ function list_tables(conn::LibPQ.Connection, library; print=true, verify_links=t
     return data
 end
 
+"""
+    describe_table(conn, library, table, print=true, properties=["is_nullable","data_type"])
+
+Retrieve and print the description of a specific table from a given library in the WRDS database connection.
+
+# Arguments
+- `conn`: The connection to the WRDS database.
+- `library`: The library in the WRDS database where the table is located.
+- `table`: The table in the library to describe.
+- `print::Bool`: If true (default), the function will print a pretty version of the table description: approximate number of rows, column names and some additional column properties.
+- properties::Vector{String}: A list of additional column properties to include in the description. Default is `["is_nullable","data_type"]`.
+
+# Returns
+- A vector of column names
+"""
 function describe_table(conn, library, table; 
                         print=true,
                         properties=["is_nullable","data_type"])
@@ -232,12 +316,51 @@ function get_row_count(conn::LibPQ.Connection, library, table)
     return parse(Int, m.captures[1])
 end
 
+"""
+    raw_sql(conn, query)
+
+Run a raw SQL query on the WRDS database connection.
+
+# Arguments
+- conn::Union{LibPQ.Connection, WRDSConnectionSettings}: A LibPQ connection object representing the connection to the PostgreSQL database, or the WRDS connection settings.
+- query::String: The SQL query to execute.
+
+# Returns
+- data::NamedTuple: A Tables.jl compatible NamedTuple containing the retrieved data.
+"""
 function raw_sql(conn, query)
     res = execute(conn, query)
     data = columntable(res)
     return data
 end
 
+"""
+    get_table(conn, library, table; 
+          columns=nothing, 
+          where=nothing, 
+          limit=10,
+          offset=0)
+
+Retrieve data from a table in a PostgreSQL database using a LibPQ connection.
+
+# Arguments
+- conn::Union{LibPQ.Connection, WRDSConnectionSettings}: A LibPQ connection object representing the connection to the PostgreSQL database, or the WRDS connection settings.
+- library::String: The name of the database schema where the table is located.
+- table::String: The name of the table from which to retrieve data.
+- columns::Vector{String}|Nothing: (Optional) A vector of column names to select. Default is `nothing`, which selects all columns.
+- where::Union{String, Vector{String}, Nothing}: (Optional) A string or vector of strings representing the conditions to filter the rows. Default is `nothing`, which means no filtering.
+- limit::Int: (Optional) The maximum number of rows to retrieve. Default is 10.
+- offset::Int: (Optional) The number of rows to skip before starting to return rows. Default is 0.
+
+# Returns
+- data::DataFrame: A DataFrame containing the retrieved data.
+
+# Example
+```julia
+conn = WRDSConnectionSettings(username="myusername", password="mypassword")
+data = get_table(conn, "crsp", "msf", columns=["permno", "ret"], limit=100, offset=50)
+```
+"""
 function get_table(conn::LibPQ.Connection, library, table; 
                    columns=nothing, 
                    where=nothing, 
