@@ -7,8 +7,7 @@ Note: You must have a valid WRDS account to use this package.
 ## Installation
 
 ```julia
-pkg> add http://github.com/elenev/WRDS.jl
-using WRDS
+pkg> add https://github.com/elenev/WRDS.jl
 ```
 
 ## Usage
@@ -20,6 +19,7 @@ There are two ways to use this package. The first opens a persistent connection 
 To open a connection, call
 
 ```julia
+using WRDS
 wrds = WRDS.connect(username="myusername", password="mypassword")
 ```
 
@@ -31,7 +31,8 @@ In the second approach, you create a `WRDSConnectionSettings` object that contai
 The `WRDSConnectionSettings` constructor follows the same syntax as `connect()`:
 
 ```julia
-settings = WRDSConnectionSettings(username="myusername", password="mypassword")
+using WRDS
+settings = WRDS.WRDSConnectionSettings(username="myusername", password="mypassword")
 ```
 
 ### Retrieving Data
