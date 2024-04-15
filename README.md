@@ -80,7 +80,7 @@ This will download the first 10 rows of the `msf` table in the `crsp` library. Y
 You can also download data from a table using a SQL query. The equivalent to the `get_table` call above would be:
 
 ```julia
-data = WRDS.raw_sql(wrds, "crsp", "select * from msf limit 10")
+data = WRDS.raw_sql(wrds, "select * from crsp.msf limit 10")
 ```
 
 In both cases, the data is returned as a `NamedTuple` of `LibPQ` columns. This output complies with the `Tables.jl` interface so it can be passed directly into a `DataFrame` constructor if you prefer to use `DataFrame`s.
