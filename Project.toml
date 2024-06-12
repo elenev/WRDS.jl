@@ -1,6 +1,6 @@
 name = "WRDS"
 uuid = "01be1aad-4938-46f0-adad-3b8614061b76"
-authors = ["Vadim Elenev <elenev@gmail.com> and contributors"]
+authors = ["Vadim Elenev <47358678+elenev@users.noreply.github.com> and contributors"]
 version = "1.0.0-DEV"
 
 [deps]
