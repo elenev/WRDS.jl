@@ -1,12 +1,10 @@
-# WRDS
+# WRDS.jl
 
 *This package is not affiliated with WRDS or the University of Pennsylvania.*
 
-This is a Julia package for accessing the Wharton Research Data Services (WRDS) data sets. It provides a simple interface to download data from WRDS using its PostgresSQL interface and load them into Julia. The package is inspired by the `wrds` python package and this tutorial by Yifan Liu on Julia Discourse: https://discourse.julialang.org/t/querying-wrds-data-using-julia/31835.
+A Julia package for accessing [Wharton Research Data Services (WRDS)](https://wrds-www.wharton.upenn.edu/) datasets via their PostgreSQL interface. Inspired by the Python `wrds` package and [this tutorial](https://discourse.julialang.org/t/querying-wrds-data-using-julia/31835) by Yifan Liu.
 
-Note: You must have a valid WRDS account to use this package.
-
-Currently, the package is experimental. There are probably bugs and missing features. If you encounter any issues, please open an issue on GitHub. I will do my best to address them.
+**Requirements:** A valid WRDS account with database access.
 
 ## Installation
 
@@ -14,92 +12,211 @@ Currently, the package is experimental. There are probably bugs and missing feat
 pkg> add https://github.com/elenev/WRDS.jl
 ```
 
-## Usage
-
-### Connecting
-
-There are two ways to use this package. The first opens a persistent connection to the WRDS server. You then pass this connection as an argument to functions that download data. When you're done, it is your responsibility to close the connection. This is important -- WRDS will temporarily lock your account if you have too many open connections.
-
-To open a connection, call
+## Quick Start
 
 ```julia
-using WRDS
-wrds = WRDS.connect(username="myusername", password="mypassword")
+using WRDS, DataFrames
+
+# Connect to WRDS
+conn = WRDS.connect(username="myusername")  # prompts for password
+
+# List available libraries
+libraries = WRDS.list_libraries(conn)
+
+# List tables in a library
+tables = WRDS.list_tables(conn, "crsp")
+
+# Get table schema
+cols = WRDS.describe_table(conn, "crsp", "msf")
+
+# Download data
+data = WRDS.get_table(conn, "crsp", "msf",
+    columns=["permno", "date", "ret"],
+    limit=1000) |> DataFrame
+
+# Run custom SQL
+data = WRDS.raw_sql(conn, "SELECT * FROM crsp.msf LIMIT 10") |> DataFrame
+
+# Close connection when done
+close(conn)
 ```
 
-The password argument is optional. If omitted, `connect()` will search for a `.pgpass` or `pgpass.conf` file in the default location (home directory on *nix, `%APPDATA%\postgresql` on Windows). If it finds one, it will use the password stored there. If it doesn't find one, it will prompt you for a password. You can also supply the path to the password file as the `passfile` argument. In general, it is a good idea to store your password in a password file rather than hardcoding it in your script.
+## Authentication
 
+### Option 1: Password File (Recommended)
 
-In the second approach, you create a `WRDSConnectionSettings` object that contains your WRDS credentials. You pass this object as an argument to functions that download data. The function then opens a connection, downloads the data, and closes the connection in one step. If it encounters an error, it will close the connection before returning.
+Store your credentials in a `.pgpass` file for secure, passwordless authentication:
 
-The `WRDSConnectionSettings` constructor follows the same syntax as `connect()`:
+**Location:** `~/.pgpass` (Linux/macOS) or `%APPDATA%\postgresql\pgpass.conf` (Windows)
+
+**Format:**
+```
+wrds-pgdata.wharton.upenn.edu:9737:wrds:myusername:mypassword
+```
+
+Then connect without specifying credentials:
+```julia
+conn = WRDS.connect(username="myusername")  # reads password from .pgpass
+```
+
+Or let the package extract the username from the file:
+```julia
+settings = WRDS.WRDSConnectionSettings()  # uses ~/.pgpass for everything
+conn = WRDS.connect(settings)
+```
+
+### Option 2: Direct Password
 
 ```julia
-using WRDS
+conn = WRDS.connect(username="myusername", password="mypassword")
+```
+
+### Option 3: Interactive Prompt
+
+```julia
+conn = WRDS.connect(username="myusername")  # prompts if no .pgpass found
+```
+
+## Connection Management
+
+### Persistent Connection
+
+Open a connection, use it for multiple queries, then close it:
+
+```julia
+conn = WRDS.connect(username="myusername", password="mypassword")
+
+# Multiple queries...
+libs = WRDS.list_libraries(conn)
+data = WRDS.get_table(conn, "crsp", "msf", limit=100)
+
+# Important: close when done to avoid WRDS account lockout
+close(conn)
+```
+
+### Automatic Connection Management
+
+Pass a `WRDSConnectionSettings` object instead of a connection. The connection opens, runs the query, and closes automatically:
+
+```julia
 settings = WRDS.WRDSConnectionSettings(username="myusername", password="mypassword")
+
+# Each call handles its own connection
+libs = WRDS.list_libraries(settings)
+data = WRDS.get_table(settings, "crsp", "msf", limit=100)
+# No close() needed
+```
+
+## API Reference
+
+### Exploring Data
+
+#### `list_libraries`
+
+List available WRDS libraries/schemas:
+
+```julia
+libraries = WRDS.list_libraries(conn)
+libraries = WRDS.list_libraries(conn; print=false)      # suppress table output
+libraries = WRDS.list_libraries(conn; sasonly=true)     # SAS libraries only
+```
+
+#### `list_tables`
+
+List tables in a library:
+
+```julia
+tables = WRDS.list_tables(conn, "crsp")
+tables = WRDS.list_tables(conn, "crsp"; print=false)         # suppress output
+tables = WRDS.list_tables(conn, "crsp"; verify_links=false)  # faster, less accurate URLs
+```
+
+#### `describe_table`
+
+Get column information for a table:
+
+```julia
+columns = WRDS.describe_table(conn, "crsp", "msf")
+columns = WRDS.describe_table(conn, "crsp", "msf"; print=false)
+columns = WRDS.describe_table(conn, "crsp", "msf";
+    properties=["is_nullable", "data_type", "character_maximum_length"])
 ```
 
 ### Retrieving Data
 
-All subsequent functions can take either a `WRDSConnectionSettings` object or a connection object as their first argument. 
+#### `get_table`
 
-#### List of Available Libraries
-
-To get a list of available libraries, call
+Download data from a table with optional filtering:
 
 ```julia
-libraries = WRDS.get_libraries(wrds)
+# Basic usage (first 10 rows)
+data = WRDS.get_table(conn, "crsp", "msf")
+
+# Select columns and limit rows
+data = WRDS.get_table(conn, "crsp", "msf",
+    columns=["permno", "date", "ret"],
+    limit=1000)
+
+# With WHERE clause
+data = WRDS.get_table(conn, "crsp", "msf",
+    columns=["permno", "date", "ret"],
+    where="permno = 10000",
+    limit=1000)
+
+# Multiple conditions (joined with AND)
+data = WRDS.get_table(conn, "crsp", "msf",
+    where=["permno = 10000", "date >= '2020-01-01'"],
+    limit=1000)
+
+# Pagination
+data = WRDS.get_table(conn, "crsp", "msf", limit=100, offset=500)
+
+# Full table (use with caution on large tables!)
+data = WRDS.get_table(conn, "crsp", "msf", limit=nothing)
 ```
 
-By default, this will return a vector of all libraries that you have access to through your subscription. It will also print a table of each parent SAS library, the child libraries as defined in the Postgres schema, and the URL of the child library's description on the WRDS website. The matching between parent an child libraries is imperfect. While every available library will be returned, some links may not work. The printout can be turned off by setting the `print` argument to `false`.
+#### `raw_sql`
 
-#### List of Available Tables
-
-To get a list of available tables in a given library, call
+Execute custom SQL queries:
 
 ```julia
-tables = WRDS.get_tables(wrds, "crsp")
+data = WRDS.raw_sql(conn, """
+    SELECT a.permno, a.date, a.ret, b.shrout
+    FROM crsp.msf a
+    JOIN crsp.msenames b ON a.permno = b.permno
+    WHERE a.date >= '2020-01-01'
+    LIMIT 1000
+""")
 ```
 
-This will return a vector of all tables in the `crsp` library. It will also print a table of each table in the library and the URL of the table's description on the WRDS website. The printout can be turned off by setting the `print` argument to `false`.
+### Working with Results
 
-Note: if the library is a parent SAS library, figuring out the URL takes an additional query to the WRDS server and some processing. If you want the printout but don't care about the accuracy of the URLs, you can speed things up by setting `verify_links` to `false`.
-
-#### Downloading Data
-
-There are two ways to download data from WRDS.
-
-To download data from a table directly, call
-
-```julia
-data = WRDS.get_table(wrds, "crsp", "msf")
-```
-
-This will download the first 10 rows of the `msf` table in the `crsp` library. You can specify the number of rows to download with the `limit` argument. If you want to download the entire table, set `limit` to `nothing`. You can also pass a vector of `columns` to download only some columns, and `offset` to skip the first `offset` rows.
-
-You can also download data from a table using a SQL query. The equivalent to the `get_table` call above would be:
-
-```julia
-data = WRDS.raw_sql(wrds, "select * from crsp.msf limit 10")
-```
-
-In both cases, the data is returned as a `NamedTuple` of `LibPQ` columns. This output complies with the `Tables.jl` interface so it can be passed directly into a `DataFrame` constructor if you prefer to use `DataFrame`s.
+All data retrieval functions return a `NamedTuple` compatible with [Tables.jl](https://github.com/JuliaData/Tables.jl):
 
 ```julia
 using DataFrames
-df = WRDS.get_table(wrds, "crsp", "msf") |> DataFrame
+
+# Convert to DataFrame
+df = WRDS.get_table(conn, "crsp", "msf", limit=100) |> DataFrame
+
+# Or use the constructor directly
+data = WRDS.raw_sql(conn, "SELECT * FROM crsp.msf LIMIT 100")
+df = DataFrame(data)
 ```
 
-### Closing the Connection
+## Troubleshooting
 
-If you opened a connection with `connect()`, you must close it when you're done. To close a connection, call
+### Connection Lockout
 
-```julia
-WRDS.close(wrds)
-```
+WRDS limits concurrent connections. If you're locked out:
+1. Wait a few minutes for connections to timeout
+2. Always `close(conn)` when done
+3. Consider using `WRDSConnectionSettings` for automatic management
 
-If you used the `WRDSConnectionSettings` approach, there are no connections to close. The connection is closed automatically when the function returns.
+### Library vs Schema Names
 
-## Future Work
+WRDS uses both SAS library names (e.g., `crsp`) and PostgreSQL schema names (e.g., `crsp_a_stock`). The `list_libraries` function shows both and their mappings.
 
-It would be great to have convenience functions for common data sets or dataset combinations. Ideally, the merges would be done on the server side to minimize the amount of data transferred and avoid a `DataFrames` dependency. If you have any other ideas or requests, please open an issue on GitHub. Or better yet, code it up and open a pull request! I'm not registering the package yet because I can't commit to actively maintain it. If that's something you want to do, let me know.
+## Contributing
+
+Issues and pull requests are welcome at [https://github.com/elenev/WRDS.jl](https://github.com/elenev/WRDS.jl). I'm not registering the package yet because I can't commit to actively maintain it. If that's something you want to do, let me know.

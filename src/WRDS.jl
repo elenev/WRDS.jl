@@ -8,7 +8,37 @@ const DEFAULT_HOST = "wrds-pgdata.wharton.upenn.edu"
 const DEFAULT_PORT = 9737
 const DEFAULT_PASSFILE = expanduser("~/.pgpass")    
 
+"""
+    abstract type WRDSCredentials
+
+Abstract type for WRDS authentication credentials. Subtypes include:
+- [`WRDSPasswordCredentials`](@ref): Username and password authentication
+- [`WRDSPassfileCredentials`](@ref): Authentication via a `.pgpass` file
+"""
 abstract type WRDSCredentials end
+
+"""
+    WRDSPasswordCredentials
+
+Credentials for WRDS authentication using a username and password.
+
+# Fields
+- `username::String`: The WRDS username
+- `password::Base.SecretBuffer`: The password stored securely in memory
+
+# Constructors
+    WRDSPasswordCredentials(username::String, password::String)
+    WRDSPasswordCredentials(username::String)  # prompts for password
+
+# Example
+```julia
+# With password provided
+cred = WRDSPasswordCredentials("myusername", "mypassword")
+
+# With interactive password prompt
+cred = WRDSPasswordCredentials("myusername")
+```
+"""
 struct WRDSPasswordCredentials <: WRDSCredentials
     username::String
     password::Base.SecretBuffer
@@ -22,6 +52,34 @@ function WRDSPasswordCredentials(username::String)
     return WRDSPasswordCredentials(username, secret)
 end
 
+"""
+    WRDSPassfileCredentials
+
+Credentials for WRDS authentication using a PostgreSQL `.pgpass` file.
+
+The `.pgpass` file format is: `hostname:port:database:username:password`
+Wildcards (`*`) are supported for hostname, port, and database fields.
+
+# Fields
+- `username::String`: The WRDS username (extracted from the passfile)
+- `passfile::String`: Path to the `.pgpass` file
+
+# Constructors
+    WRDSPassfileCredentials(passfile::String)  # extracts username from file
+    WRDSPassfileCredentials()  # uses default ~/.pgpass
+
+# Example
+```julia
+# Using default ~/.pgpass location
+cred = WRDSPassfileCredentials()
+
+# Using custom passfile location
+cred = WRDSPassfileCredentials("/path/to/my/.pgpass")
+```
+
+# See Also
+- PostgreSQL pgpass documentation: https://www.postgresql.org/docs/current/libpq-pgpass.html
+"""
 struct WRDSPassfileCredentials <: WRDSCredentials
     username::String
     passfile::String
@@ -74,22 +132,47 @@ function _get_pg_username(host::String, port::Union{String,Int}, dbname::String;
 end
 
 """
-    struct WRDSConnectionSettings
+    WRDSConnectionSettings{C<:WRDSCredentials}
 
-A struct representing the connection settings for accessing WRDS (Wharton Research Data Services) database.
-    
+Connection settings for accessing the WRDS (Wharton Research Data Services) PostgreSQL database.
+
 # Fields
-- dbname::String: The name of the database. Default is "wrds".
-- host::String: The hostname or IP address of the WRDS database server. Default is "wrds-pgdata.wharton.upenn.edu".
-- port::Int: The port number of the WRDS database server. Default is 9737.
-- username::String: The username for authenticating with the WRDS database.
-- password::Union{String, Nothing}: The password for authenticating with the WRDS database. Default is `nothing`.
-- passfile::Union{String, Nothing}: The path to a `.pgpass` file containing the password for authenticating with the WRDS database. Default is `nothing`.
-    
-# Example
+- `dbname::String`: Database name. Default is `"wrds"`.
+- `host::String`: Database server hostname. Default is `"wrds-pgdata.wharton.upenn.edu"`.
+- `port::Int`: Database server port. Default is `9737`.
+- `credentials::C`: Authentication credentials ([`WRDSPasswordCredentials`](@ref) or [`WRDSPassfileCredentials`](@ref)).
+
+# Constructor
+    WRDSConnectionSettings(; username=nothing, password=nothing, passfile=nothing,
+                            credentials=nothing, dbname="wrds",
+                            host="wrds-pgdata.wharton.upenn.edu", port=9737)
+
+The constructor accepts several authentication patterns:
+- `username` + `password`: Creates `WRDSPasswordCredentials`
+- `username` + `passfile`: Creates `WRDSPassfileCredentials` with specified file
+- `username` only: Prompts for password interactively
+- `credentials`: Use a pre-constructed credentials object
+- No credentials: Uses default `~/.pgpass` file
+
+# Examples
 ```julia
-settings = WRDSConnectionSettings(username="myusername", password="mypassword")
+# With username and password
+settings = WRDSConnectionSettings(username="myuser", password="mypass")
+
+# With pgpass file (recommended for security)
+settings = WRDSConnectionSettings(username="myuser", passfile="~/.pgpass")
+
+# Using default ~/.pgpass (extracts username from file)
+settings = WRDSConnectionSettings()
+
+# With pre-constructed credentials
+cred = WRDSPasswordCredentials("myuser", "mypass")
+settings = WRDSConnectionSettings(credentials=cred)
 ```
+
+# See Also
+- [`connect`](@ref): Establish a connection using these settings
+- [`WRDSPasswordCredentials`](@ref), [`WRDSPassfileCredentials`](@ref): Credential types
 """
 struct WRDSConnectionSettings{C<:WRDSCredentials}
     dbname::String
@@ -126,16 +209,43 @@ end
 
 
 """
-    connect(; username, kwargs...)
+    connect(; username, password=nothing, passfile=nothing, kwargs...)
 
-Create a `WRDSConnectionSettings` object with the provided `username` and any additional keyword arguments, and then establish a connection to the WRDS database.
+Establish a connection to the WRDS database with the provided credentials.
 
 # Arguments
-- `username::String`: The username for authenticating with the WRDS database.
-- `kwargs...`: Additional keyword arguments to be passed to the `WRDSConnectionSettings` constructor.
+- `username::String`: The WRDS username (required).
+- `password::String`: (Optional) The password. If omitted and no `passfile` is provided, prompts interactively.
+- `passfile::String`: (Optional) Path to a `.pgpass` file containing credentials.
+- `kwargs...`: Additional arguments passed to [`WRDSConnectionSettings`](@ref) (e.g., `host`, `port`, `dbname`).
 
 # Returns
 - `conn::LibPQ.Connection`: A connection to the WRDS database.
+
+# Examples
+```julia
+using WRDS
+
+# With password
+conn = WRDS.connect(username="myuser", password="mypass")
+
+# With pgpass file (recommended)
+conn = WRDS.connect(username="myuser", passfile="~/.pgpass")
+
+# Interactive password prompt
+conn = WRDS.connect(username="myuser")
+
+# Don't forget to close when done!
+close(conn)
+```
+
+# Note
+Remember to close the connection when finished to avoid WRDS account lockout
+due to too many open connections. Alternatively, use [`WRDSConnectionSettings`](@ref)
+with data retrieval functions, which handle connection lifecycle automatically.
+
+# See Also
+- [`WRDSConnectionSettings`](@ref): For automatic connection management
 """
 function connect(; username, kwargs...)
     settings = WRDSConnectionSettings(; username, kwargs...)
@@ -145,13 +255,21 @@ end
 """
     connect(settings::WRDSConnectionSettings)
 
-Establish a connection to the WRDS database using the provided `settings`.
+Establish a connection to the WRDS database using the provided settings.
 
 # Arguments
-- `settings::WRDSConnectionSettings`: The settings to use for the connection.
+- `settings::WRDSConnectionSettings`: Connection settings including credentials.
 
 # Returns
 - `conn::LibPQ.Connection`: A connection to the WRDS database.
+
+# Example
+```julia
+settings = WRDSConnectionSettings(username="myuser", password="mypass")
+conn = WRDS.connect(settings)
+# ... use connection ...
+close(conn)
+```
 """
 function connect(settings::WRDSConnectionSettings)
     connstr = "dbname=$(settings.dbname) host=$(settings.host) port=$(settings.port) " *
@@ -437,31 +555,66 @@ function raw_sql(conn, query)
 end
 
 """
-    get_table(conn, library, table; 
-          columns=nothing, 
-          where=nothing, 
-          limit=10,
-          offset=0)
+    get_table(conn, library, table; columns=nothing, where=nothing, limit=10, offset=0)
 
-Retrieve data from a table in a PostgreSQL database using a LibPQ connection.
+Retrieve data from a WRDS table.
 
 # Arguments
-- conn::Union{LibPQ.Connection, WRDSConnectionSettings}: A LibPQ connection object representing the connection to the PostgreSQL database, or the WRDS connection settings.
-- library::String: The name of the database schema where the table is located.
-- table::String: The name of the table from which to retrieve data.
-- columns::Vector{String}|Nothing: (Optional) A vector of column names to select. Default is `nothing`, which selects all columns.
-- where::Union{String, Vector{String}, Nothing}: (Optional) A string or vector of strings representing the conditions to filter the rows. Default is `nothing`, which means no filtering.
-- limit::Int: (Optional) The maximum number of rows to retrieve. Default is 10.
-- offset::Int: (Optional) The number of rows to skip before starting to return rows. Default is 0.
+- `conn`: A `LibPQ.Connection` or [`WRDSConnectionSettings`](@ref) object.
+- `library::String`: The database schema/library name (e.g., `"crsp"`, `"comp"`).
+- `table::String`: The table name (e.g., `"msf"`, `"mse"`).
+- `columns::Vector{String}`: (Optional) Column names to select. Default `nothing` selects all columns.
+- `where::Union{String, Vector{String}}`: (Optional) SQL WHERE conditions. Multiple conditions are joined with `AND`.
+- `limit::Int`: (Optional) Maximum rows to retrieve. Default is `10`. Set to `nothing` for all rows.
+- `offset::Int`: (Optional) Number of rows to skip. Default is `0`.
 
 # Returns
-- data::DataFrame: A DataFrame containing the retrieved data.
+- `NamedTuple`: A Tables.jl-compatible NamedTuple of column vectors. Can be converted to DataFrame with `DataFrame(data)`.
 
-# Example
+# Examples
 ```julia
-conn = WRDSConnectionSettings(username="myusername", password="mypassword")
-data = get_table(conn, "crsp", "msf", columns=["permno", "ret"], limit=100, offset=50)
+using WRDS, DataFrames
+
+conn = WRDS.connect(username="myuser", password="mypass")
+
+# Basic query (first 10 rows)
+data = WRDS.get_table(conn, "crsp", "msf")
+
+# Select specific columns with limit
+data = WRDS.get_table(conn, "crsp", "msf", columns=["permno", "date", "ret"], limit=100)
+
+# With WHERE clause
+data = WRDS.get_table(conn, "crsp", "msf",
+    columns=["permno", "ret"],
+    where="permno = 10000",
+    limit=1000)
+
+# Multiple WHERE conditions (joined with AND)
+data = WRDS.get_table(conn, "crsp", "msf",
+    columns=["permno", "date", "ret"],
+    where=["permno = 10000", "date >= '2020-01-01'"],
+    limit=100)
+
+# Convert to DataFrame
+df = DataFrame(data)
+
+# Download entire table (use with caution!)
+data = WRDS.get_table(conn, "crsp", "msf", limit=nothing)
+
+close(conn)
 ```
+
+# Using with WRDSConnectionSettings (automatic connection management)
+```julia
+settings = WRDSConnectionSettings(username="myuser", password="mypass")
+data = WRDS.get_table(settings, "crsp", "msf", limit=100)
+# No need to close - connection is handled automatically
+```
+
+# See Also
+- [`raw_sql`](@ref): For custom SQL queries
+- [`list_tables`](@ref): List available tables in a library
+- [`describe_table`](@ref): Get column information for a table
 """
 function get_table(conn::LibPQ.Connection, library, table; 
                    columns=nothing, 
