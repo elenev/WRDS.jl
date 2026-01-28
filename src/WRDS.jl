@@ -2,6 +2,77 @@ module WRDS
 
 using LibPQ, Tables, PrettyTables
 
+# Defaults
+const DEFAULT_DBNAME = "wrds"
+const DEFAULT_HOST = "wrds-pgdata.wharton.upenn.edu"
+const DEFAULT_PORT = 9737
+const DEFAULT_PASSFILE = expanduser("~/.pgpass")    
+
+abstract type WRDSCredentials end
+struct WRDSPasswordCredentials <: WRDSCredentials
+    username::String
+    password::Base.SecretBuffer
+end
+function WRDSPasswordCredentials(username::String, password::String)
+    secret = Base.SecretBuffer(password)
+    return WRDSPasswordCredentials(username, secret)
+end
+function WRDSPasswordCredentials(username::String)
+    secret = Base.getpass("Enter your WRDS password for user '$username'")
+    return WRDSPasswordCredentials(username, secret)
+end
+
+struct WRDSPassfileCredentials <: WRDSCredentials
+    username::String
+    passfile::String
+end
+function WRDSPassfileCredentials(passfile::String)
+    username = _get_pg_username(DEFAULT_HOST, DEFAULT_PORT, DEFAULT_DBNAME; pgpass_path=passfile)
+    if username === nothing
+        error("No matching entry found in pgpass file at $passfile for host=$(DEFAULT_HOST), port=$(DEFAULT_PORT), dbname=$(DEFAULT_DBNAME)")
+    end
+    return WRDSPassfileCredentials(username, passfile)
+end
+
+WRDSPassfileCredentials() = WRDSPassfileCredentials(DEFAULT_PASSFILE)
+
+
+function _get_pg_username(host::String, port::Union{String,Int}, dbname::String; pgpass_path::String=DEFAULT_PASSFILE)
+    
+    # 1. Open the file safely
+    if !isfile(pgpass_path)
+        error("pgpass file not found at $pgpass_path")
+    end
+
+    open(pgpass_path, "r") do io
+        for line in eachline(io)
+            # 2. Skip comments
+            startswith(line, "#") && continue
+            
+            # 3. Parse fields (handles escaped colons if necessary, but keep it simple for now)
+            fields = split(strip(line), ":")
+            
+            # Standard .pgpass has 5 fields
+            if length(fields) >= 4
+                f_host, f_port, f_db, f_user = fields[1:4]
+                #println("Checking pgpass entry: host=$f_host vs. $host, port=$f_port vs. $port, db=$f_db vs. $dbname")
+
+                # 4. Match Logic: exact match or wildcard '*'
+                host_match = (f_host == host) || (f_host == "*")
+                port_match = (f_port == string(port)) || (f_port == "*")
+                db_match   = (f_db   == dbname) || (f_db   == "*")
+
+                #println("Match results: host_match=$host_match, port_match=$port_match, db_match=$db_match")
+                
+                if host_match && port_match && db_match
+                    return f_user
+                end
+            end
+        end
+        return nothing # No match found
+    end
+end
+
 """
     struct WRDSConnectionSettings
 
@@ -20,14 +91,39 @@ A struct representing the connection settings for accessing WRDS (Wharton Resear
 settings = WRDSConnectionSettings(username="myusername", password="mypassword")
 ```
 """
-Base.@kwdef struct WRDSConnectionSettings
-    dbname::String = "wrds"
-    host::String = "wrds-pgdata.wharton.upenn.edu"
-    port::Int = 9737
-    username::String
-    password::Union{String, Nothing} = nothing
-    passfile::Union{String, Nothing} = nothing
+struct WRDSConnectionSettings{C<:WRDSCredentials}
+    dbname::String
+    host::String
+    port::Int
+    credentials::C 
 end
+function WRDSConnectionSettings(; kwargs...)
+    if haskey(kwargs, :username)
+        if haskey(kwargs, :credentials)
+            error("Cannot provide both 'credentials' and 'username' argument.")
+        end
+        username = kwargs[:username]
+
+        if haskey(kwargs, :password)
+            password = kwargs[:password]
+            cred = WRDSPasswordCredentials(username, password)
+        elseif haskey(kwargs, :passfile)
+            passfile = kwargs[:passfile]
+            cred = WRDSPassfileCredentials(username, passfile)
+        else
+            cred = WRDSPasswordCredentials(username)
+        end
+    elseif haskey(kwargs, :credentials)
+        cred = kwargs[:credentials]
+    else
+        cred = WRDSPassfileCredentials()
+    end
+    dbname = get(kwargs, :dbname, DEFAULT_DBNAME)
+    host = get(kwargs, :host, DEFAULT_HOST)
+    port = get(kwargs, :port, DEFAULT_PORT)
+    return WRDSConnectionSettings{typeof(cred)}(dbname, host, port, cred)
+end
+
 
 """
     connect(; username, kwargs...)
@@ -58,16 +154,22 @@ Establish a connection to the WRDS database using the provided `settings`.
 - `conn::LibPQ.Connection`: A connection to the WRDS database.
 """
 function connect(settings::WRDSConnectionSettings)
-    connstr = "dbname=$(settings.dbname) host=$(settings.host) port=$(settings.port) user=$(settings.username)"
-    if settings.password !== nothing
-        connstr *= " password=$(settings.password)"
-    elseif settings.passfile !== nothing
-        connstr *= " passfile=$(settings.passfile)"
-    end
+    connstr = "dbname=$(settings.dbname) host=$(settings.host) port=$(settings.port) " *
+                _credential_string(settings.credentials)
 
     conn = LibPQ.Connection(connstr)
     return conn
 end
+
+function _credential_string(creds::WRDSPasswordCredentials)
+    seekstart(creds.password)
+    return "user=$(creds.username) password=$(read(creds.password, String)) sslmode=require"
+end
+
+function _credential_string(creds::WRDSPassfileCredentials)
+    return "user=$(creds.username) passfile=$(creds.passfile)"
+end
+
 
 function wrap_function(f::Function, settings::WRDSConnectionSettings, args...; kwargs...)
     conn = connect(settings)
